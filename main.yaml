@@ -1,0 +1,148 @@
+apiVersion: v1
+kind: Template
+labels:
+  template: application-template-sample-pipeline
+message: |-
+  A Jenkins server must be instantiated in this project to manage
+  the Pipeline BuildConfig created by this template.  You will be able to log in to
+  it using your OpenShift user credentials.
+metadata:
+  annotations:
+    openshift.io/display-name: Pipeline Build Example
+    description: |-
+      This example showcases the new Jenkins Pipeline integration in OpenShift,
+      which performs continuous integration and deployment right on the platform.
+      The template contains a Jenkinsfile - a definition of a multi-stage CI/CD process - that
+      leverages the underlying OpenShift platform for dynamic and scalable
+      builds. OpenShift integrates the status of your pipeline builds into the web
+      console allowing you to see your entire application lifecycle in a single view.
+    iconClass: icon-jenkins
+    tags: instant-app,jenkins
+  name: jenkins-pipeline-example
+parameters:
+- description: The name assigned to all of the frontend objects defined in this template.
+  displayName: Name
+  name: NAME
+  required: true
+- description: The exposed hostname that will route to the Node.js service, if left
+    blank a value will be defaulted.
+  displayName: Application Hostname
+  name: APPLICATION_DOMAIN
+- description: The URL of the repository with your application source code.
+  displayName: Git Repository URL
+  name: SOURCE_REPOSITORY_URL
+  required: true
+  value: https://github.com/varunthukral/iibrepo.git
+  displayName: Git Reference
+  name: SOURCE_REPOSITORY_REF
+- description: Set this to the relative path to your project if it is not in the root
+    of your repository.
+  displayName: Context Directory
+  name: CONTEXT_DIR
+- description: Github trigger secret.  A difficult to guess string encoded as part of the webhook URL.  Not encrypted.
+  displayName: GitHub Webhook Secret
+  from: '[a-zA-Z0-9]{40}'
+  generate: expression
+  name: GITHUB_WEBHOOK_SECRET
+- description: A secret string used to configure the Generic webhook.
+  displayName: Generic Webhook Secret
+  from: '[a-zA-Z0-9]{40}'
+  generate: expression
+  name: GENERIC_WEBHOOK_SECRET
+- description: The custom NPM mirror URL
+  displayName: Custom NPM Mirror URL
+  name: NPM_MIRROR
+- description: The OpenShift Namespace where the NodeJS and MongoDB ImageStreams reside.
+  displayName: Namespace
+  name: NAMESPACE
+  required: true
+  value: openshift
+objects:
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    annotations:
+      pipeline.alpha.openshift.io/uses: '[{"name": "${NAME}", "namespace": "", "kind": "DeploymentConfig"}]'
+    labels:
+      name: sample-pipeline
+    name: sample-pipeline
+  spec:
+    strategy:
+      jenkinsPipelineStrategy:
+        jenkinsfile: |-
+          try {
+             timeout(time: 20, unit: 'MINUTES') {
+                node('nodejs') {
+                    stage('build') {
+                      openshift.withCluster() {
+                         openshift.withProject() {
+                            def bld = openshift.startBuild('${NAME}')
+                            bld.untilEach {
+                              return it.object().status.phase == "Running"
+                            }
+                            bld.logs('-f')
+                         }  
+                      }
+                    }
+                    stage('deploy') {
+                      openshift.withCluster() {
+                        openshift.withProject() {
+                          def dc = openshift.selector('dc', '${NAME}')
+                          dc.rollout().latest()
+                        }
+                      }
+                    }
+                  }
+             }
+          } catch (err) {
+             echo "in catch block"
+             echo "Caught: ${err}"
+             currentBuild.result = 'FAILURE'
+             throw err
+          }          
+      type: JenkinsPipeline
+    triggers:
+    - github:
+        secret: secret101
+      type: GitHub
+    - generic:
+        secret: secret101
+      type: Generic
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    annotations:
+      description: Defines how to build the application
+    name: ${NAME}
+  spec:
+    output:
+      to:
+        kind: ImageStreamTag
+        name: ${NAME}:latest
+    postCommit:
+      script: npm test
+    source:
+      contextDir: ${CONTEXT_DIR}
+      git:
+        ref: ${SOURCE_REPOSITORY_REF}
+        uri: ${SOURCE_REPOSITORY_URL}
+      type: Git
+    strategy:
+      sourceStrategy:
+        env:
+        - name: NPM_MIRROR
+          value: ${NPM_MIRROR}
+        from:
+          kind: ImageStreamTag
+          name: nodejs:8
+          namespace: ${NAMESPACE}
+      type: Source
+    triggers:
+    - github:
+        secret: ${GITHUB_WEBHOOK_SECRET}
+      type: GitHub
+    - generic:
+        secret: ${GENERIC_WEBHOOK_SECRET}
+      type: Generic
+
+
